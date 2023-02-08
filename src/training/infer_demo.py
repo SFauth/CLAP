@@ -1,6 +1,9 @@
+import sys
+sys.path.append("../.")
 import os
 import torch
 import librosa
+import glob
 from open_clip import create_model
 from training.data import get_audio_features
 from training.data import int16_to_float32, float32_to_int16
@@ -22,9 +25,9 @@ def infer_text():
     precision = 'fp32'
     amodel = 'HTSAT-tiny' # or 'PANN-14'
     tmodel = 'roberta' # the best text encoder in our training
-    enable_fusion = True # False if you do not want to use the fusion model
+    enable_fusion = False # False if you do not want to use the fusion model
     fusion_type = 'aff_2d'
-    pretrained = "/home/la/kechen/Research/KE_CLAP/ckpt/fusion_best.pt" # the checkpoint name, the unfusion model can also be loaded.
+    pretrained = "/home/sfauth/code/CLAP/assets/checkpoints/epoch_top_0.pt" # the checkpoint name, the unfusion model can also be loaded.
 
     model, model_cfg = create_model(
         amodel,
@@ -43,15 +46,17 @@ def infer_text():
     text_embed = model.get_text_embedding(text_data)
     print(text_embed.size())
 
+    return text_embed
+
 def infer_audio():
     
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
     precision = 'fp32'
     amodel = 'HTSAT-tiny' # or 'PANN-14'
     tmodel = 'roberta' # the best text encoder in our training
-    enable_fusion = True # False if you do not want to use the fusion model
+    enable_fusion = False # False if you do not want to use the fusion model
     fusion_type = 'aff_2d'
-    pretrained = "/home/la/kechen/Research/KE_CLAP/ckpt/fusion_best.pt" # the checkpoint name, the unfusion model can also be loaded.
+    pretrained = "/home/sfauth/code/CLAP/assets/checkpoints/epoch_top_0.pt" # the checkpoint name, the unfusion model can also be loaded.
 
     model, model_cfg = create_model(
         amodel,
@@ -64,24 +69,39 @@ def infer_audio():
     )
 
     # load the waveform of the shape (T,), should resample to 48000
-    audio_waveform, sr = librosa.load('/home/la/kechen/Research/KE_CLAP/ckpt/test_clap_long.wav', sr=48000) 
-    # quantize
-    audio_waveform = int16_to_float32(float32_to_int16(audio_waveform))
-    audio_waveform = torch.from_numpy(audio_waveform).float()
-    audio_dict = {}
+    file_list = glob.glob("/home/sfauth/code/CLAP/data/clotho_test_data/*.wav")
 
-    # the 'fusion' truncate mode can be changed to 'rand_trunc' if run in unfusion mode
-    audio_dict = get_audio_features(
-        audio_dict, audio_waveform, 480000, 
-        data_truncating='fusion', 
-        data_filling='repeatpad',
-        audio_cfg=model_cfg['audio_cfg']
-    )
+    file_list = file_list[0:2]
+
+    
+    audio_dicts = []
+
+    for file in file_list:
+
+        audio_waveform, sr = librosa.load(file, sr=48000) 
+        # quantize
+        audio_waveform = int16_to_float32(float32_to_int16(audio_waveform))
+        audio_waveform = torch.from_numpy(audio_waveform).float()
+        audio_dict = {}
+
+        # the 'fusion' truncate mode can be changed to 'rand_trunc' if run in unfusion mode
+        audio_dict = get_audio_features(
+            audio_dict, audio_waveform, 480000, 
+            data_truncating='rand_trunc', 
+            data_filling='repeatpad',
+            audio_cfg=model_cfg['audio_cfg']
+        )
+
+        audio_dicts.append(audio_dict)
+    
     # can send a list to the model, to process many audio tracks in one time (i.e. batch size)
-    audio_embed = model.get_audio_embedding([audio_dict])
+    audio_embed = model.get_audio_embedding(audio_dicts)
     print(audio_embed.size())
     
-
+    return audio_embed
 
 if __name__ == "__main__":
-    infer_text()
+
+    text_embed = infer_text()
+    audio_embed = infer_audio()
+    print(text_embed @ audio_embed.T)
