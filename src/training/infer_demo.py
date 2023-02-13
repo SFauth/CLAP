@@ -46,7 +46,7 @@ def infer_text(text_data):
     text_data = tokenizer(text_data)
     
     text_embed = model.get_text_embedding(text_data)
-    print(text_embed.size())
+
     return text_embed
 
 def infer_audio():
@@ -65,14 +65,19 @@ def infer_audio():
         pretrained,
         precision=precision,
         device=device,
-        enable_fusion=False,
+        enable_fusion=enable_fusion,
         fusion_type=fusion_type
     )
 
+    logit_scale_a, logit_scale_t = model(None, None, device)
+    logit_scale_a = logit_scale_a.cpu()
+
     # load the waveform of the shape (T,), should resample to 48000
     file_list = glob.glob("/home/sfauth/code/CLAP/data/clotho_test_data/*.wav")
-    print(file_list[0:5])
-    file = file_list[4]
+
+    #file = file_list[232]
+
+    file = "/home/sfauth/code/CLAP/data/clotho_test_data/080809_05_FontanaKoblerov.wav"
 
     audio_waveform, sr = librosa.load(file, sr=48000) 
 
@@ -90,9 +95,8 @@ def infer_audio():
     )
     # can send a list to the model, to process many audio tracks in one time (i.e. batch size)
     audio_embed = model.get_audio_embedding([audio_dict])
-    print(audio_embed.size())
 
-    return audio_embed, file
+    return audio_embed, file, logit_scale_a
     
 
 
@@ -102,8 +106,8 @@ if __name__ == "__main__":
     # Automatize getting GT caption
  
     
-    audio_embed, file = infer_audio()
-
+    audio_embed, file, logit_scale_a = infer_audio()
+    
     wav_only = os.path.split(file)[1]
     path_to_wav = os.path.join("clotho_test_data", wav_only) # place close to html to avoid errors with not finding the file
 
@@ -114,29 +118,38 @@ if __name__ == "__main__":
     
     captions.insert(0, "I love the contrastive learning")
     
-    caption_list = ["animal", "this is an animal", "this is an audio clip of an animal", "this is an audio clip of an anmial making noises"]
+    caption_list = ["water", "this is water", "this is an audio clip of water", "this is an audio clip of water running"]
 
     for caption in caption_list:
 
         captions.insert(len(captions), caption)
 
+    captions = [' the', ' a', ' this', ' an', ' "', "water", "this is water", "this is an audio clip of water", "this is an audio clip of water running"]
+    # " gets highest score, which shouldn't be!!!!!!
 
     text_embed = infer_text(captions) 
-    similarities = text_embed @ audio_embed.T
-    similarities = similarities.cpu().data.numpy()
+
+    #similarities = text_embed @ audio_embed.T
+    #similarities = similarities.cpu().data.numpy()
+
+
+    logits_per_text = logit_scale_a * torch.cosine_similarity(audio_embed, text_embed) 
+    logits_per_image = torch.unsqueeze(logits_per_text.T, 0)
+
+    similarities = logits_per_image.softmax(dim=-1).cpu().detach().numpy().T
+
+    
     
     #only_wav = os.path.split(file)[1]
     wav_col = pd.Series([file] * len(captions))
 
     
-
     sim_text = pd.concat([pd.DataFrame(similarities), pd.Series(captions)], axis=1)
     sim_text = pd.concat([sim_text, wav_col], axis=1)
     sim_text.columns = ["dot_product(text, audio.T)", "Text", "Audio"]
 
     #sim_text["Audio"] = pd.Series([f"""<audio controls> <source src="clotho_test_data/105bpm.wav" type="audio/wav"> </audio>"""] * len(text))
 
-    print(path_to_wav)
     sim_text["Audio"] = sim_text["Audio"].apply(lambda audio_path: f"""<audio controls> <source src="{path_to_wav}" type="audio/wav"> </audio>""")
     
     # save table as html
@@ -146,7 +159,7 @@ if __name__ == "__main__":
     html_path = os.path.join(root_path, "sim_tests", html_filename)
     sim_text.to_html(html_path, escape=False)
     
-    
+
     """
     - fluctuates somewhat, but the winner stays the winner, which is what matters to us
     """
